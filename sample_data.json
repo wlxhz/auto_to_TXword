@@ -1,0 +1,20 @@
+[
+  {
+    "sequence": 1,
+    "customer_name": "测试客户甲",
+    "phone": "13800000001",
+    "first_wear_date": "2026-09-20",
+    "glucose_mean": 6.25,
+    "glucose_max": 10.4,
+    "glucose_min": 3.8
+  },
+  {
+    "sequence": 2,
+    "customer_name": "测试客户乙",
+    "phone": "13800000002",
+    "first_wear_date": "2026-09-21",
+    "glucose_mean": 7.1,
+    "glucose_max": 12.6,
+    "glucose_min": 4.2
+  }
+]
