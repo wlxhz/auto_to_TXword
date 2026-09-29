@@ -1,4 +1,11 @@
 {
+  "data_source": {
+    "type": "database",
+    "database": {
+      "url": "${GLUCOSE_DATABASE_URL:-}",
+      "connect_timeout_seconds": 10
+    }
+  },
   "remote_api": {
     "url": "https://example.invalid/api/glucose-customer-summary",
     "method": "GET",
@@ -16,10 +23,10 @@
   },
   "validation": {
     "allow_empty": false,
-    "required_fields": ["sequence", "customer_name", "first_wear_date", "glucose_mean", "glucose_max", "glucose_min"],
-    "not_empty_fields": ["sequence", "customer_name", "first_wear_date", "glucose_mean", "glucose_max", "glucose_min"],
-    "unique_fields": [],
-    "unique_key_sets": [["customer_name", "first_wear_date"]],
+    "required_fields": ["sequence", "customer_id", "customer_name", "first_wear_date", "glucose_mean", "glucose_max", "glucose_min"],
+    "not_empty_fields": ["sequence", "customer_id", "customer_name", "first_wear_date", "glucose_mean", "glucose_max", "glucose_min"],
+    "unique_fields": ["customer_id"],
+    "unique_key_sets": [],
     "date_rules": {
       "first_wear_date": {"formats": ["%Y-%m-%d"], "allow_null": false}
     },
@@ -31,6 +38,7 @@
     },
     "ordered_numeric_fields": [["glucose_min", "glucose_mean", "glucose_max"]]
   },
+  "monitoring": {"active_days": 14},
   "followup_schedule": {
     "offset_days": {
       "followup_1h_date": 0,
@@ -42,6 +50,7 @@
   "mapping": {
     "fields": {
       "sequence": "序号",
+      "customer_id": "客户ID",
       "customer_name": "姓名",
       "phone": "电话",
       "first_wear_date": "首次佩戴日期",
@@ -60,7 +69,7 @@
     "column_order": [
       "序号", "姓名", "性别", "电话", "是否是糖尿病", "是否服药", "首次佩戴日期",
       "1小时回访", "3天回访", "首次周回访", "取机器回访", "血糖均值",
-      "血糖最高值", "血糖最低值", "14天血糖达标情况"
+      "血糖最高值", "血糖最低值", "14天血糖达标情况", "客户ID", "最近更新日期"
     ],
     "mock": {
       "output_file": "output/tencent_doc_preview.xlsx",
@@ -76,29 +85,35 @@
       "file_id": "",
       "sheet_id": "",
       "sync_strategy": "review_existing",
-      "primary_keys": ["姓名", "首次佩戴日期"],
-      "primary_key_types": {"姓名": "text", "首次佩戴日期": "date"},
+      "primary_keys": ["客户ID"],
+      "primary_key_types": {"客户ID": "text"},
+      "legacy_primary_keys": ["姓名", "首次佩戴日期"],
+      "legacy_primary_key_types": {"姓名": "text", "首次佩戴日期": "date"},
       "date_timezone_offset_hours": 8,
-      "managed_fields": ["序号", "姓名", "电话", "首次佩戴日期", "1小时回访", "3天回访", "首次周回访", "取机器回访", "血糖均值", "血糖最高值", "血糖最低值"],
-      "new_record_policy": "skip",
+      "managed_fields": ["客户ID", "序号", "姓名", "电话", "首次佩戴日期", "1小时回访", "3天回访", "首次周回访", "取机器回访", "血糖均值", "血糖最高值", "血糖最低值"],
+      "last_updated_field": "最近更新日期",
+      "activity_fields": ["姓名", "电话", "首次佩戴日期", "1小时回访", "3天回访", "首次周回访", "取机器回访", "血糖均值", "血糖最高值", "血糖最低值"],
+      "new_record_policy": "add",
       "ignore_blank_updates": true,
       "batch_size": 100,
       "page_size": 100,
       "field_types": {
-        "序号": "integer",
+        "序号": "text",
+        "客户ID": "text",
+        "最近更新日期": "text",
         "姓名": "text",
         "性别": "text",
         "电话": "text",
         "是否是糖尿病": "text",
         "是否服药": "text",
-        "首次佩戴日期": "date",
-        "1小时回访": "date",
-        "3天回访": "date",
-        "首次周回访": "date",
-        "取机器回访": "date",
-        "血糖均值": "number",
-        "血糖最高值": "number",
-        "血糖最低值": "number",
+        "首次佩戴日期": "text",
+        "1小时回访": "text",
+        "3天回访": "text",
+        "首次周回访": "text",
+        "取机器回访": "text",
+        "血糖均值": "text",
+        "血糖最高值": "text",
+        "血糖最低值": "text",
         "14天血糖达标情况": "text"
       }
     },

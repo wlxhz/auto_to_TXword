@@ -164,3 +164,61 @@ def test_review_existing_updates_only_changed_managed_fields(tmp_path) -> None:
 def test_date_values_compare_by_beijing_calendar_day() -> None:
     assert _values_equal("1790784000000", "2026-10-01", "date", 8)
     assert not _values_equal("2026-10-01", "2026-10-04", "date", 8)
+
+
+def test_customer_id_migration_adds_new_customer_and_marks_updated_date(tmp_path) -> None:
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def call_tool(self, name, arguments):
+            self.calls.append((name, arguments))
+            if name == "smartsheet.list_records":
+                return {"records": [{
+                    "record_id": "existing-1",
+                    "field_values": {
+                        "姓名": [{"text": "客户甲", "type": "text"}],
+                        "首次佩戴日期": [{"text": "2026-10-01", "type": "text"}],
+                        "血糖均值": [{"text": "6.0", "type": "text"}],
+                    },
+                }], "has_more": False}
+            return {}
+
+    fake = Client()
+    client = TencentDocClient({}, tmp_path, logging.getLogger("test"))
+    source = [
+        {"field_values": {
+            "客户ID": [{"text": "uuid-1", "type": "text"}],
+            "姓名": [{"text": "客户甲", "type": "text"}],
+            "首次佩戴日期": [{"text": "2026-10-01", "type": "text"}],
+            "血糖均值": [{"text": "6.5", "type": "text"}],
+        }},
+        {"field_values": {
+            "客户ID": [{"text": "uuid-2", "type": "text"}],
+            "姓名": [{"text": "客户乙", "type": "text"}],
+            "首次佩戴日期": [{"text": "2026-10-02", "type": "text"}],
+            "血糖均值": [{"text": "5.9", "type": "text"}],
+        }},
+    ]
+    config = {
+        "primary_keys": ["客户ID"],
+        "legacy_primary_keys": ["姓名", "首次佩戴日期"],
+        "legacy_primary_key_types": {"首次佩戴日期": "date"},
+        "managed_fields": ["客户ID", "姓名", "首次佩戴日期", "血糖均值"],
+        "last_updated_field": "最近更新日期",
+        "review_date": "2026-10-04",
+        "new_record_policy": "add",
+        "field_types": {"客户ID": "text", "最近更新日期": "text"},
+    }
+    result = client._review_existing_smartsheet(fake, "file", "sheet", source, config)
+    assert result["updated"] == 1
+    assert result["added"] == 1
+    updates = [args for name, args in fake.calls if name == "smartsheet.update_records"]
+    adds = [args for name, args in fake.calls if name == "smartsheet.add_records"]
+    assert updates[0]["records"][0]["field_values"] == {
+        "客户ID": [{"text": "uuid-1", "type": "text"}],
+        "血糖均值": [{"text": "6.5", "type": "text"}],
+        "最近更新日期": [{"text": "2026-10-04", "type": "text"}],
+    }
+    assert adds[0]["records"][0]["field_values"]["客户ID"][0]["text"] == "uuid-2"
+    assert adds[0]["records"][0]["field_values"]["最近更新日期"][0]["text"] == "2026-10-04"

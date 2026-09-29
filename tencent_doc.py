@@ -260,6 +260,8 @@ class TencentDocClient:
                 "血糖最高值": 13,
                 "血糖最低值": 13,
                 "14天血糖达标情况": 22,
+                "客户ID": 38,
+                "最近更新日期": 18,
             }
             for index, column_name in enumerate(columns, start=1):
                 worksheet.column_dimensions[worksheet.cell(1, index).column_letter].width = widths.get(column_name, 14)
@@ -276,6 +278,9 @@ class TencentDocClient:
             protocol_version=mcp.get("protocol_version", "2025-03-26"),
         )
         document_type = self.config.get("document_type", "smartsheet")
+        if document_type == "sheet":
+            from sheet_sync import sync_sheet
+            return sync_sheet(client, records, self.config["sheet"], self.base_dir)
         if document_type == "smartsheet":
             return self._write_smartsheet(client, records)
         if document_type == "excel":
@@ -337,31 +342,49 @@ class TencentDocClient:
             if key not in managed_fields:
                 managed_fields.append(key)
 
+        legacy_keys = list(config.get("legacy_primary_keys", []))
+        lookup_fields = list(dict.fromkeys([*managed_fields, *legacy_keys]))
+
         existing_items = self._list_smartsheet_records(
-            client, file_id, sheet_id, managed_fields, int(config.get("page_size", 100))
+            client, file_id, sheet_id, lookup_fields, int(config.get("page_size", 100))
         )
         existing_by_key: dict[tuple[str, ...], dict[str, Any]] = {}
+        legacy_by_key: dict[tuple[str, ...], dict[str, Any]] = {}
         key_types = dict(config.get("primary_key_types", {}))
+        legacy_key_types = dict(config.get("legacy_primary_key_types", {}))
         timezone_offset_hours = float(config.get("date_timezone_offset_hours", 8))
         duplicate_target_keys = 0
         for item in existing_items:
             values = item.get("field_values", {})
             key = _record_key(values, primary_keys, key_types, timezone_offset_hours)
-            if key in existing_by_key:
-                duplicate_target_keys += 1
+            if all(key):
+                if key in existing_by_key:
+                    duplicate_target_keys += 1
+                else:
+                    existing_by_key[key] = item
+            elif legacy_keys:
+                legacy_key = _record_key(values, legacy_keys, legacy_key_types, timezone_offset_hours)
+                if not all(legacy_key) or legacy_key in legacy_by_key:
+                    duplicate_target_keys += 1
+                else:
+                    legacy_by_key[legacy_key] = item
             else:
-                existing_by_key[key] = item
+                duplicate_target_keys += 1
         if duplicate_target_keys:
             raise TencentDocError(f"腾讯文档中发现 {duplicate_target_keys} 个重复组合键，请先处理后再同步")
 
         ignore_blank = bool(config.get("ignore_blank_updates", True))
         field_types = dict(config.get("field_types", {}))
+        last_updated_field = config.get("last_updated_field", "")
+        activity_fields = set(config.get("activity_fields", managed_fields))
+        review_date = config.get("review_date", date.today().isoformat())
         new_policy = config.get("new_record_policy", "skip")
         updates: list[dict[str, Any]] = []
         adds: list[dict[str, Any]] = []
         unchanged = 0
         unmatched_source = 0
         seen_keys: set[tuple[str, ...]] = set()
+        matched_record_ids: set[str] = set()
         changed_field_counts: dict[str, int] = {}
 
         for source_item in records:
@@ -373,18 +396,36 @@ class TencentDocClient:
                 raise TencentDocError(f"服务器数据存在重复组合键：{' + '.join(primary_keys)}")
             seen_keys.add(source_key)
             target_item = existing_by_key.get(source_key)
+            migrated_identity = False
+            if target_item is None and legacy_keys:
+                legacy_key = _record_key(source_values, legacy_keys, legacy_key_types, timezone_offset_hours)
+                if all(legacy_key):
+                    target_item = legacy_by_key.get(legacy_key)
+                    migrated_identity = target_item is not None
             if not target_item:
                 unmatched_source += 1
                 if new_policy == "add":
-                    adds.append({"field_values": _select_fields(source_values, managed_fields, ignore_blank)})
+                    added_values = _select_fields(source_values, managed_fields, ignore_blank)
+                    if last_updated_field:
+                        added_values[last_updated_field] = _format_value(review_date, field_types.get(last_updated_field, "text"))
+                    adds.append({"field_values": added_values})
                 elif new_policy == "error":
                     raise TencentDocError("服务器存在腾讯文档中找不到的记录；new_record_policy=error")
                 elif new_policy != "skip":
                     raise TencentDocError(f"不支持的 new_record_policy：{new_policy}")
                 continue
 
+            record_id = target_item.get("record_id", "")
+            if not record_id or record_id in matched_record_ids:
+                raise TencentDocError("多条服务器记录匹配同一腾讯文档行，请核查客户ID和旧组合键")
+            matched_record_ids.add(record_id)
+
             target_values = target_item.get("field_values", {})
             changed: dict[str, Any] = {}
+            if migrated_identity:
+                for field in primary_keys:
+                    changed[field] = source_values[field]
+                    changed_field_counts[field] = changed_field_counts.get(field, 0) + 1
             for field in managed_fields:
                 if field in primary_keys or field not in source_values:
                     continue
@@ -395,7 +436,9 @@ class TencentDocClient:
                     changed[field] = source_value
                     changed_field_counts[field] = changed_field_counts.get(field, 0) + 1
             if changed:
-                updates.append({"record_id": target_item.get("record_id", ""), "field_values": changed})
+                if last_updated_field and activity_fields.intersection(changed):
+                    changed[last_updated_field] = _format_value(review_date, field_types.get(last_updated_field, "text"))
+                updates.append({"record_id": record_id, "field_values": changed})
             else:
                 unchanged += 1
 
@@ -420,7 +463,7 @@ class TencentDocClient:
             "unchanged": unchanged,
             "added": len(adds),
             "unmatched_source": unmatched_source,
-            "unmatched_target": len(set(existing_by_key) - seen_keys),
+            "unmatched_target": len(existing_items) - len(matched_record_ids),
             "changed_fields": changed_field_counts,
         }
         self.logger.info("腾讯文档每日审查完成：%s", result)

@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from config_loader import ConfigError, load_config, resolve_path
+from database_source import get_database_data
 from followup_schedule import add_followup_dates, due_today_counts
+from monitoring import partition_monitoring_records
 from notification import send_notification
 from remote_data import get_remote_data
 from tencent_doc import update_tencent_doc
@@ -50,23 +52,44 @@ def _load_input(path: str) -> list[dict[str, Any]]:
 def run(config: dict[str, Any], logger: logging.Logger, input_json: str | None, dry_run: bool) -> dict[str, Any]:
     started = datetime.now().astimezone()
     logger.info("任务开始：%s", started.isoformat(timespec="seconds"))
-    source_data = _load_input(input_json) if input_json else get_remote_data(config["remote_api"], logger)
+    if input_json:
+        source_data = _load_input(input_json)
+    elif config.get("data_source", {}).get("type") == "ssh_database":
+        from server_source import get_server_data
+        server_config = dict(config["data_source"]["ssh_database"])
+        server_config["credential_file"] = str(resolve_path(config, server_config["credential_file"]))
+        source_data = get_server_data(server_config, logger)
+    elif config.get("data_source", {}).get("type") == "database":
+        source_data = get_database_data(config["data_source"]["database"], logger)
+    else:
+        source_data = get_remote_data(config["remote_api"], logger)
     validated = validate_data(source_data, config["validation"])
-    enriched = add_followup_dates(validated, config.get("followup_schedule", {}).get("offset_days"))
-    due_counts = due_today_counts(enriched, datetime.now(timezone(timedelta(hours=8))).date())
+    today = datetime.now(timezone(timedelta(hours=8))).date()
+    active, expired = partition_monitoring_records(
+        validated, today, int(config.get("monitoring", {}).get("active_days", 14))
+    )
+    enriched = add_followup_dates(active, config.get("followup_schedule", {}).get("offset_days"))
+    due_counts = due_today_counts(enriched, today)
     mapped = map_fields(enriched, config["mapping"].get("fields", {}))
-    logger.info("数据校验与字段映射完成：records=%d", len(mapped))
+    logger.info("数据校验与字段映射完成：active=%d, expired=%d", len(mapped), len(expired))
 
     doc_config = dict(config["tencent_doc"])
+    if doc_config.get("document_type") == "smartsheet":
+        doc_config["smartsheet"] = {
+            **doc_config.get("smartsheet", {}),
+            "review_date": today.isoformat(),
+        }
     if dry_run:
         doc_config["backend"] = "mock"
     result = update_tencent_doc(mapped, doc_config, Path(config["_config_dir"]), logger)
     result["due_today"] = due_counts
+    result["expired_skipped"] = len(expired)
     elapsed = (datetime.now().astimezone() - started).total_seconds()
     review_summary = ""
     if result.get("mode") == "smartsheet_review_existing":
         review_summary = (
             f"\n已更新：{result.get('updated', 0)} 条"
+            f"\n已新增：{result.get('added', 0)} 条"
             f"\n无变化：{result.get('unchanged', 0)} 条"
             f"\n源端未匹配：{result.get('unmatched_source', 0)} 条"
             f"\n文档端未匹配：{result.get('unmatched_target', 0)} 条"
@@ -75,6 +98,7 @@ def run(config: dict[str, Any], logger: logging.Logger, input_json: str | None, 
         "【台账自动化】执行成功\n"
         f"执行时间：{started:%Y-%m-%d %H:%M:%S %z}\n"
         f"处理记录：{len(mapped)} 条\n"
+        f"超过监测期跳过：{len(expired)} 条\n"
         f"今日应回访：1小时 {due_counts['followup_1h_date']}、3天 {due_counts['followup_3d_date']}、首次周 {due_counts['followup_first_week_date']}、取机器 {due_counts['pickup_followup_date']} 条\n"
         f"目标后端：{result.get('backend')}\n"
         f"耗时：{elapsed:.2f} 秒"
