@@ -1,11 +1,11 @@
-"""Verify Tencent Docs write permission without changing ledger contents."""
+"""Verify SmartSheet write permission without changing ledger contents."""
 from __future__ import annotations
 
 import os
 
 from run_live import live_config
 from server_run import read_env
-from sheet_sync import cell_value
+from smart_sync import encode, plain
 from tencent_doc import MCPHttpClient
 
 
@@ -14,20 +14,29 @@ def main() -> None:
     doc = live_config()["tencent_doc"]
     mcp = doc["mcp"]
     client = MCPHttpClient(mcp["endpoint"], mcp["token"], mcp["timeout_seconds"], mcp["protocol_version"])
-    target = doc["sheet"]
+    if doc["document_type"] != "smartsheet":
+        raise RuntimeError("目标已不是预期的智能表格，停止验证")
+    target = doc["smartsheet"]
     location = {"file_id": target["file_id"], "sheet_id": target["sheet_id"]}
-    query = {**location, "start_row": 0, "end_row": 0, "start_col": 0, "end_col": 0}
-    before = client.call_tool("get_cell_data", query)["cells"]
-    if len(before) != 1 or cell_value(before[0]) != target["headers"][0]:
-        raise RuntimeError("目标表头与预期不一致，停止验证")
-    value = cell_value(before[0])
-    client.call_tool("set_range_value", {**location, "values": [
-        {"row": 0, "col": 0, "value_type": "STRING", "string_value": value}
-    ]})
-    after = client.call_tool("get_cell_data", query)["cells"]
-    if len(after) != 1 or cell_value(after[0]) != value:
+    fields = client.call_tool("smartsheet.list_fields", location).get("fields", [])
+    if not any(f["field_title"] == "客户姓名" and f["field_type"] == "text" for f in fields):
+        raise RuntimeError("客户姓名字段类型已变化，停止验证")
+    before = client.call_tool("smartsheet.list_records", {**location, "limit": 100}).get("records", [])
+    record = next((r for r in before if any(e.get("field") == "客户姓名" and plain(e)
+                                        for e in r.get("field_values", []))), None)
+    if record is None:
+        raise RuntimeError("未找到可验证的已有客户记录")
+    value = next(plain(e) for e in record["field_values"] if e.get("field") == "客户姓名")
+    client.call_tool("smartsheet.update_records", {**location, "records": [{
+        "record_id": record["record_id"],
+        "field_values": [encode("客户姓名", value, "text")]
+    }]})
+    after = client.call_tool("smartsheet.list_records", {**location, "limit": 100}).get("records", [])
+    updated = next((r for r in after if r["record_id"] == record["record_id"]), None)
+    if updated is None or not any(e.get("field") == "客户姓名" and plain(e) == value
+                                  for e in updated.get("field_values", [])):
         raise RuntimeError("写入后回读验证失败")
-    print("target_sheet_write_readback=passed; business_data_changed=false")
+    print("target_smartsheet_write_readback=passed; business_data_changed=false")
 
 
 if __name__ == "__main__":

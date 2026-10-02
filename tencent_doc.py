@@ -289,6 +289,9 @@ class TencentDocClient:
 
     def _write_smartsheet(self, client: MCPHttpClient, records: list[dict[str, Any]]) -> dict[str, Any]:
         sheet = self.config.get("smartsheet", {})
+        if sheet.get("typed_api"):
+            from smart_sync import sync_smart
+            return sync_smart(client, records, sheet, self.base_dir)
         file_id, sheet_id = sheet.get("file_id", ""), sheet.get("sheet_id", "")
         if not file_id or not sheet_id:
             raise TencentDocError("smartsheet.file_id 和 smartsheet.sheet_id 不能为空")

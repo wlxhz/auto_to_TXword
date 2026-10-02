@@ -1,4 +1,4 @@
-"""Run a real server-to-worksheet sync against the existing 15 columns."""
+"""Synchronize production glucose data to the current SmartSheet target."""
 import os
 from pathlib import Path
 from config_loader import load_config
@@ -17,10 +17,11 @@ def live_config():
     config["mapping"]["fields"] = {k: names.get(v, v) for k, v in config["mapping"]["fields"].items() if k != "customer_id"}
     doc = config["tencent_doc"]
     doc["backend"] = "mcp"
-    doc["document_type"] = "sheet"
-    doc["mcp"]["endpoint"] = "https://docs.qq.com/api/v6/sheet/mcp"
-    doc["sheet"] = {"file_id": "DVFd3U0x1cXNtTFRn", "sheet_id": "000001",
-                    "headers": [names.get(v, v) for v in doc["column_order"][:15]]}
+    doc["document_type"] = "smartsheet"
+    doc["mcp"]["endpoint"] = "https://docs.qq.com/openapi/mcp"
+    doc["smartsheet"] = {"file_id": "DVEFWWHprU0ZRa1Za", "sheet_id": "1uYjAx",
+                         "typed_api": True, "sync_strategy": "review_existing",
+                         "activity_field": "最近同步变更时间", "view_id": "vJZ6Dq"}
     return config
 
 
